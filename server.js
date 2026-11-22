@@ -8,7 +8,7 @@ const PORT = +process.env.PORT || 3000;
 const MAKS = 25;                                   // en fazla oyuncu
 // İnternette barındırma (Render vb.): HOST_KEY ortam değişkeni yönetici anahtarıdır.
 // Barındırılan kurulumda "kendi bilgisayarımdan geliyor" güveni kapalıdır; sunucu ekranı yalnızca /host?key=ANAHTAR ile açılır.
-const BARINDIRMA = !!(process.env.RENDER || process.env.HOST_KEY);
+const BARINDIRMA = !!(process.env.RENDER || process.env.HOST_KEY || process.env.IZINLI_HOST || process.env.RENDER_EXTERNAL_HOSTNAME);
 const ANAHTAR = process.env.HOST_KEY || crypto.randomBytes(6).toString('hex');
 const EK_ADRESLER = [process.env.RENDER_EXTERNAL_HOSTNAME, ...(process.env.IZINLI_HOST || '').split(',')].map(x => (x || '').trim().toLowerCase()).filter(Boolean);
 const ADETLER = [10, 15, 20], SURELER = [15, 20, 30];
@@ -100,7 +100,7 @@ function cevapla(o, secim) {
 }
 function katil(pin, ad, av) {
   ad = String(ad || '').replace(/\s+/g, ' ').trim().slice(0, 16);
-  if (String(pin).trim() !== G.pin) return { hata: 'PIN hatalı. Büyük ekrandaki 6 haneli sayıyı yaz.' };
+  if (String(pin).trim() !== G.pin) return { hata: 'PIN hatalı. Büyük ekrandaki 6 haneli sayıyı yaz.', pinHatali: true };
   if (!ad) return { hata: 'Adını yaz.' };
   if (G.faz === 'final') return { hata: 'Bu oyun bitti. Yeni oyunu bekle.' };
   if (G.oyuncular.size >= MAKS) return { hata: `Oyun dolu (${MAKS} kişi).` };
@@ -137,23 +137,41 @@ function adresGecerli(req) {
   if (o) { try { if (!izinli.has(new URL(o).host.toLowerCase())) return false; } catch { return false; } }
   return true;
 }
-// Yanlış anahtar denemelerini IP başına sınırla: 8 yanlıştan sonra 5 dakika bekletilir.
-const denemeler = new Map();
+// İstemci IP'si: barındırmada X-Forwarded-For'un EN SAĞDAKİ değeri alınır (onu güvenilir vekil sunucu ekler;
+// soldaki değerleri istemci uydurabilir). Yerelde doğrudan bağlantı adresi kullanılır.
+function istemciIp(req) {
+  const x = String(req.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
+  return (BARINDIRMA && x.length ? x[x.length - 1] : req.socket.remoteAddress) || '?';
+}
+// Hatalı deneme sayaçları ("tür|ip" başına, 5 dakikalık pencere). Bellek sınırlıdır ve süresi dolanlar silinir.
+const PENCERE = 5 * 60000, sayaclar = new Map();
+const kilitli = (tur, ip, enCok) => { const d = sayaclar.get(tur + '|' + ip); return !!(d && Date.now() - d.t < PENCERE && d.n >= enCok); };
+function hataSay(tur, ip) {
+  const k = tur + '|' + ip, simdi = Date.now(), d = sayaclar.get(k);
+  if (sayaclar.size > 5000) sayaclar.clear();
+  sayaclar.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
+}
+setInterval(() => { const simdi = Date.now(); for (const [k, d] of sayaclar) if (simdi - d.t >= PENCERE) sayaclar.delete(k); }, 60000).unref();
+
+// Yönetici anahtarı: 8 yanlış denemeden sonra o adres 5 dakika bekletilir.
 function anahtarDogru(req, anahtar) {
-  const ip = (BARINDIRMA && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress;
-  const simdi = Date.now(), d = denemeler.get(ip);
-  if (d && d.n >= 8 && simdi - d.t < 5 * 60000) return false;
+  const ip = istemciIp(req);
+  if (kilitli('anahtar', ip, 8)) return false;
   const a = Buffer.from(String(anahtar || '')), b = Buffer.from(ANAHTAR);
-  if (a.length === b.length && crypto.timingSafeEqual(a, b)) { denemeler.delete(ip); return true; }
-  if (anahtar) denemeler.set(ip, { n: (d && simdi - d.t < 5 * 60000 ? d.n : 0) + 1, t: simdi });
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+  if (anahtar) hataSay('anahtar', ip);
   return false;
 }
+// "Bu bilgisayardan geliyor" güveni yalnızca yerel kurulumda, doğrudan localhost adresine yapılan ve
+// vekil sunucudan geçmemiş isteklerde geçerlidir.
+const yerelGuven = req => !BARINDIRMA && yerel(req) && !req.headers['x-forwarded-for'] &&
+  /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/.test(String(req.headers.host || '').toLowerCase());
 const json = (res, kod, veri) => { res.writeHead(kod, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(veri)); };
 const govde = req => new Promise(coz => { let s = ''; req.on('data', c => { s += c; if (s.length > 4096) req.destroy(); }); req.on('end', () => { try { coz(JSON.parse(s || '{}')); } catch { coz({}); } }); });
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'), yol = u.pathname;
-  const yetkili = anahtar => (!BARINDIRMA && yerel(req)) || anahtarDogru(req, anahtar);
+  const yetkili = anahtar => yerelGuven(req) || anahtarDogru(req, anahtar);
   if (yol === '/saglik') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok'); }   // barındırma servisinin sağlık denetimi
   if (!adresGecerli(req)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Geçersiz adres'); }
 
@@ -173,7 +191,13 @@ http.createServer(async (req, res) => {
   if (req.method === 'POST') {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { hata: 'JSON bekleniyor' });
     const b = await govde(req);
-    if (yol === '/api/katil') return json(res, 200, katil(b.pin, b.ad, b.av));
+    if (yol === '/api/katil') {
+      const ip = istemciIp(req);
+      if (kilitli('pin', ip, 60)) return json(res, 429, { hata: 'Çok fazla hatalı PIN denemesi. Birkaç dakika sonra tekrar dene.' });
+      const r = katil(b.pin, b.ad, b.av);
+      if (r.pinHatali) { hataSay('pin', ip); delete r.pinHatali; }
+      return json(res, 200, r);
+    }
     if (yol === '/api/cevap') { const o = G.oyuncular.get(b.id); if (!o) return json(res, 200, { hata: 'yok' }); cevapla(o, b.secim); return json(res, 200, { tamam: true }); }
     if (yol === '/api/host') { if (!yetkili(b.key)) return json(res, 403, { hata: 'yetkisiz' }); hostIslem(b); return json(res, 200, { tamam: true }); }
     return json(res, 404, { hata: 'yok' });
