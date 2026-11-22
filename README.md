@@ -1,4 +1,4 @@
-# Milli Teknoloji Bilgi Yarışı
+# Acıbadem Milli Teknoloji Oyunu
 
 Ortaokul öğrencileri için, Türkiye'nin milli teknolojileri üzerine çok oyunculu bilgi yarışması. Sorular akıllı tahtada açılır; 1–25 öğrenci kendi tabletinden PIN ve isimle katılıp cevap verir.
 
