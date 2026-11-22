@@ -6,7 +6,11 @@ const AVATAR = require('./public/avatar');
 
 const PORT = +process.env.PORT || 3000;
 const MAKS = 25;                                   // en fazla oyuncu
-const ANAHTAR = crypto.randomBytes(3).toString('hex'); // sunucu ekranını başka cihazdan açmak için
+// İnternette barındırma (Render vb.): HOST_KEY ortam değişkeni yönetici anahtarıdır.
+// Barındırılan kurulumda "kendi bilgisayarımdan geliyor" güveni kapalıdır; sunucu ekranı yalnızca /host?key=ANAHTAR ile açılır.
+const BARINDIRMA = !!(process.env.RENDER || process.env.HOST_KEY);
+const ANAHTAR = process.env.HOST_KEY || crypto.randomBytes(6).toString('hex');
+const EK_ADRESLER = [process.env.RENDER_EXTERNAL_HOSTNAME, ...(process.env.IZINLI_HOST || '').split(',')].map(x => (x || '').trim().toLowerCase()).filter(Boolean);
 const ADETLER = [10, 15, 20], SURELER = [15, 20, 30];
 
 /* ---------- PUANLAMA ----------
@@ -40,7 +44,7 @@ const kalanMs = () => (G.faz === 'soru' || G.faz === 'tanit') ? Math.max(0, G.bi
 function hostDurum() {
   const s = G.sorular[G.qi], liste = siralama();
   return { rol: 'host', faz: G.faz, pin: G.pin, port: PORT, adresler: lan(), ayar: G.ayar, maks: MAKS,
-    oyuncular: liste.map(o => ({ id: o.id, ad: o.ad, av: o.av, puan: o.puan, dogru: o.dogru, bagli: o.akis.size > 0, cevapladi: !!o.cevap, kazanc: o.kazanc, ok: o.ok })),
+    oyuncular: liste.map(o => ({ id: o.kod, ad: o.ad, av: o.av, puan: o.puan, dogru: o.dogru, bagli: o.akis.size > 0, cevapladi: !!o.cevap, kazanc: o.kazanc, ok: o.ok })),
     soru: soruGorunum(), kalanMs: kalanMs(),
     sonuc: G.faz === 'sonuc' ? { dogru: s.siklar.findIndex(x => x.dogru), bilgi: s.f,
       sayilar: s.siklar.map((_, i) => liste.filter(o => o.cevap && o.cevap.secim === i).length) } : null };
@@ -81,14 +85,14 @@ function soruKapat() {
   clearTimeout(G.t);
   const s = G.sorular[G.qi];
   for (const o of G.oyuncular.values()) {
-    const c = o.cevap; o.ok = !!(c && c.secim >= 0 && s.siklar[c.secim].dogru);
+    const c = o.cevap; o.ok = !!(c && s.siklar[c.secim] && s.siklar[c.secim].dogru);
     if (o.ok) { o.seri++; o.dogru++; o.kazanc = puanHesapla(c.kalan, G.ayar.sure, o.seri); o.puan += o.kazanc; }
     else { o.seri = 0; o.kazanc = 0; }
   }
   G.faz = 'sonuc'; yayinla();
 }
 function cevapla(o, secim) {
-  if (G.faz !== 'soru' || o.cevap || !(secim >= 0 && secim < 4)) return;
+  if (G.faz !== 'soru' || o.cevap || !Number.isInteger(secim) || secim < 0 || secim >= G.sorular[G.qi].siklar.length) return;
   o.cevap = { secim, kalan: Math.max(0, (G.bitis - Date.now()) / 1000) };
   const bagli = [...G.oyuncular.values()].filter(x => x.akis.size);
   if (bagli.length && bagli.every(x => x.cevap)) return soruKapat();   // herkes cevapladı: beklemeden kapat
@@ -102,7 +106,7 @@ function katil(pin, ad, av) {
   if (G.oyuncular.size >= MAKS) return { hata: `Oyun dolu (${MAKS} kişi).` };
   const adlar = new Set([...G.oyuncular.values()].map(o => o.ad.toLocaleLowerCase('tr-TR')));
   let son = ad, n = 2; while (adlar.has(son.toLocaleLowerCase('tr-TR'))) son = `${ad.slice(0, 14)} ${n++}`;
-  const o = { id: crypto.randomBytes(8).toString('hex'), ad: son, av: AVATAR.gecerli(av) ? av : '', puan: 0, seri: 0, dogru: 0, kazanc: 0, ok: false, cevap: null, akis: new Set() };
+  const o = { id: crypto.randomBytes(8).toString('hex'), kod: crypto.randomBytes(4).toString('hex'), ad: son, av: AVATAR.gecerli(av) ? av : '', puan: 0, seri: 0, dogru: 0, kazanc: 0, ok: false, cevap: null, akis: new Set() };
   G.oyuncular.set(o.id, o); yayinla();
   return { id: o.id };
 }
@@ -115,19 +119,43 @@ function hostIslem(b) {
     case 'tekrar': clearTimeout(G.t); G.faz = 'lobi'; G.qi = -1; G.sorular = [];
       for (const o of G.oyuncular.values()) Object.assign(o, { puan: 0, seri: 0, dogru: 0, kazanc: 0, ok: false, cevap: null }); yayinla(); break;
     case 'yeni': yeniOyun(); yayinla(); break;
-    case 'cikar': { const o = G.oyuncular.get(b.id); if (o) { at(o); G.oyuncular.delete(o.id); yayinla(); } } break;
+    case 'cikar': { const o = [...G.oyuncular.values()].find(x => x.kod === b.id); if (o) { at(o); G.oyuncular.delete(o.id); yayinla(); } } break;
   }
 }
 
 /* ---------- HTTP ---------- */
 const DOSYA = { '/': ['play.html', 'text/html'], '/host': ['host.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/qrcode.js': ['qrcode.js', 'text/javascript'], '/avatar.js': ['avatar.js', 'text/javascript'] };
 const yerel = req => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+
+// İstek yalnızca bu sunucunun kendi adreslerine yapılmışsa ve (varsa) Origin aynı adresse kabul edilir.
+// Böylece başka bir web sayfası tarayıcı üzerinden bu sunucuya komut gönderemez (CSRF / DNS rebinding).
+const izinliAdresler = () => new Set([...['localhost', '127.0.0.1', '[::1]', ...lan()].map(a => `${a}:${PORT}`), ...EK_ADRESLER]);
+function adresGecerli(req) {
+  const izinli = izinliAdresler();
+  if (!izinli.has(String(req.headers.host || '').toLowerCase())) return false;
+  const o = req.headers.origin;
+  if (o) { try { if (!izinli.has(new URL(o).host.toLowerCase())) return false; } catch { return false; } }
+  return true;
+}
+// Yanlış anahtar denemelerini IP başına sınırla: 8 yanlıştan sonra 5 dakika bekletilir.
+const denemeler = new Map();
+function anahtarDogru(req, anahtar) {
+  const ip = (BARINDIRMA && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress;
+  const simdi = Date.now(), d = denemeler.get(ip);
+  if (d && d.n >= 8 && simdi - d.t < 5 * 60000) return false;
+  const a = Buffer.from(String(anahtar || '')), b = Buffer.from(ANAHTAR);
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) { denemeler.delete(ip); return true; }
+  if (anahtar) denemeler.set(ip, { n: (d && simdi - d.t < 5 * 60000 ? d.n : 0) + 1, t: simdi });
+  return false;
+}
 const json = (res, kod, veri) => { res.writeHead(kod, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(veri)); };
 const govde = req => new Promise(coz => { let s = ''; req.on('data', c => { s += c; if (s.length > 4096) req.destroy(); }); req.on('end', () => { try { coz(JSON.parse(s || '{}')); } catch { coz({}); } }); });
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'), yol = u.pathname;
-  const yetkili = anahtar => yerel(req) || anahtar === ANAHTAR;
+  const yetkili = anahtar => (!BARINDIRMA && yerel(req)) || anahtarDogru(req, anahtar);
+  if (yol === '/saglik') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok'); }   // barındırma servisinin sağlık denetimi
+  if (!adresGecerli(req)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Geçersiz adres'); }
 
   if (req.method === 'GET' && yol === '/akis') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -143,6 +171,7 @@ http.createServer(async (req, res) => {
     return;
   }
   if (req.method === 'POST') {
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { hata: 'JSON bekleniyor' });
     const b = await govde(req);
     if (yol === '/api/katil') return json(res, 200, katil(b.pin, b.ad, b.av));
     if (yol === '/api/cevap') { const o = G.oyuncular.get(b.id); if (!o) return json(res, 200, { hata: 'yok' }); cevapla(o, b.secim); return json(res, 200, { tamam: true }); }
@@ -158,11 +187,17 @@ http.createServer(async (req, res) => {
   }
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Bulunamadı');
 }).listen(PORT, '0.0.0.0', () => {
-  const ip = lan()[0];
-  console.log('\n  Milli Teknoloji Bilgi Yarışı çalışıyor\n');
-  console.log(`  Sunucu ekranı (bu bilgisayar) : http://localhost:${PORT}/host`);
-  console.log(ip ? `  Oyuncular (iPad, aynı Wi-Fi)  : http://${ip}:${PORT}` : '  UYARI: Wi-Fi adresi bulunamadı. Bilgisayar ağa bağlı mı?');
-  if (ip) console.log(`  Sunucu ekranı başka cihazdan  : http://${ip}:${PORT}/host?key=${ANAHTAR}`);
+  console.log('\n  Acıbadem Milli Teknoloji Oyunu çalışıyor\n');
+  if (BARINDIRMA) {
+    const taban = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    console.log(`  Oyuncular      : ${taban}`);
+    console.log(`  Sunucu ekranı  : ${taban}/host?key=${process.env.HOST_KEY ? '<HOST_KEY değeri>' : ANAHTAR}`);
+  } else {
+    const ip = lan()[0];
+    console.log(`  Sunucu ekranı (bu bilgisayar) : http://localhost:${PORT}/host`);
+    console.log(ip ? `  Oyuncular (tablet, aynı Wi-Fi): http://${ip}:${PORT}` : '  UYARI: Wi-Fi adresi bulunamadı. Bilgisayar ağa bağlı mı?');
+    if (ip) console.log(`  Sunucu ekranı başka cihazdan  : http://${ip}:${PORT}/host?key=${ANAHTAR}`);
+  }
   console.log('\n  Durdurmak için Ctrl+C\n');
 });
 

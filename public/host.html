@@ -51,12 +51,14 @@ function durumCiz(){
   const hud = s ? `<div class="hud"><span>Soru <span class="num">${s.no}/${s.toplam}</span></span><span class="cat">${esc(s.k)}</span><span class="num">${n} oyuncu</span></div>` : '';
 
   if(D.faz === 'lobi'){
-    const ip = D.adresler[0], url = ip ? `http://${ip}:${D.port}` : '';
+    // İnternetten açıldıysa (ör. Render) oyuncular aynı adresi kullanır; bu bilgisayardan açıldıysa Wi-Fi adresi gösterilir.
+    const yerelde = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    const ip = D.adresler[0], url = !yerelde ? location.origin : (ip ? `http://${ip}:${D.port}` : '');
     const seg = (ad, deger, liste, ek) => `<div class="seg">${liste.map(v => `<button data-act="ayar" data-ad="${ad}" data-v="${v}" aria-pressed="${deger===v}">${v}${ek}</button>`).join('')}</div>`;
     return ciz(`<div class="row between"><h1>Milli Teknoloji <em>Bilgi Yarışı</em></h1><button class="ghost" data-act="ses">Ses: ${ses?'Açık':'Kapalı'}</button></div>
       <div class="lobi">
         <div class="panel center">
-          ${url ? `<div class="eyebrow">1 · Tabletinden bu adresi aç</div><div class="url">${esc(url.replace('http://',''))}</div>
+          ${url ? `<div class="eyebrow">1 · Tabletinden bu adresi aç</div><div class="url">${esc(url.replace(/^https?:\/\//,''))}</div>
             <div class="qr">${qrSvg(url + '/?pin=' + D.pin)}</div><p class="muted">ya da kamerayla kare kodu okut</p>`
             : `<p class="err">Wi-Fi adresi bulunamadı. Bu bilgisayarı tabletlerle aynı ağa bağlayın.</p>`}
           <div class="eyebrow">2 · PIN'i yaz</div><div class="pin num">${D.pin.slice(0,3)} ${D.pin.slice(3)}</div>

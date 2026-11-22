@@ -15,6 +15,19 @@ node server.js
 
 macOS'te `Baslat.command` dosyasına çift tıklamak aynı işi yapar. Bilgisayar ile tabletler aynı Wi-Fi ağında olmalıdır.
 
+## İnternette yayınlama (bilgisayarsız kullanım)
+
+Oyun bir sunucuya ihtiyaç duyduğu için GitHub Pages'te çalışmaz; ücretsiz bir barındırma servisinde çalışır. Depoda Render için hazır ayar (`render.yaml`) vardır:
+
+1. [render.com](https://render.com) adresinde GitHub hesabıyla oturum açın.
+2. **New → Blueprint** deyip bu depoyu seçin ve **Apply** ile onaylayın.
+3. Kurulum bitince Render size `https://….onrender.com` biçiminde bir adres verir. Öğrenciler bu adresten katılır.
+4. Render'da servisin **Environment** sekmesindeki `HOST_KEY` değerini kopyalayın. Akıllı tahtada şu adresi açın: `https://….onrender.com/host?key=HOST_KEY_DEĞERİ`
+
+Bu kurulumda bilgisayar ve tabletlerin aynı Wi-Fi'da olması gerekmez; internet yeterlidir. Ücretsiz planda servis 15 dakika kullanılmayınca uyur ve ilk açılış yaklaşık bir dakika sürer; dersten birkaç dakika önce adresi açın. Servis uyursa ya da yeniden başlarsa devam eden oyun silinir.
+
+`HOST_KEY` yönetici şifresidir; öğrencilerle paylaşmayın.
+
 ## Oyun
 
 - Süreli, dört şıklı sorular; hızlı ve doğru cevap daha çok puan getirir, art arda doğrular seri bonusu kazandırır.
@@ -41,6 +54,7 @@ Sorular `sorular/` klasöründe, kategori başına bir dosyadadır. Her satır �
 | `public/host.html` | Akıllı tahta ekranı |
 | `public/play.html` | Tablet ekranı |
 | `public/avatar.js` | Profil resimleri |
+| `render.yaml`, `package.json` | İnternette barındırma ayarları |
 | `public/qrcode.js` | Kare kod üretimi ([qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator), MIT lisansı) |
 
 Puanlama kuralı `server.js` içindeki `puanHesapla` fonksiyonundadır.

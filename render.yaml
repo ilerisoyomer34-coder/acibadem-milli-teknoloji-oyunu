@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: acibadem-milli-teknoloji-oyunu
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /saglik
+    envVars:
+      - key: HOST_KEY
+        generateValue: true

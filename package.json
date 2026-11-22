@@ -1,0 +1,12 @@
+{
+  "name": "acibadem-milli-teknoloji-oyunu",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Akıllı tahta ve tabletlerle oynanan çok oyunculu milli teknoloji bilgi yarışması",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
