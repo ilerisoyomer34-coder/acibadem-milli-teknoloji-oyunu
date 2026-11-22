@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Milli Teknoloji Bilgi Yarışı</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="oyuncu">
+<div class="banner" id="kopuk" hidden>Bağlantı koptu, yeniden bağlanılıyor…</div>
+<main id="app"></main>
+<script src="/avatar.js"></script>
+<script>
+// Oyuncu ekranı (iPad). Sunucudan gelen duruma göre çizilir; doğru cevabı sunucu söyleyene kadar bilmez.
+const app = document.getElementById('app'), kopuk = document.getElementById('kopuk');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n.toLocaleString('tr-TR');
+const HARF = ['A','B','C','D'];
+const UCAK = '<svg class="plane" id="plane" viewBox="0 0 34 34" aria-hidden="true"><path d="M31 17 20 13 13 4h-3l3 9H7l-3-3H2l2 7-2 7h2l3-3h6l-3 9h3l7-9 11-4z" fill="#FFFFFF"/></svg>';
+const depo = { al(){ try{ return localStorage.getItem('mty_id'); }catch(e){ return null; } },
+               yaz(v){ try{ localStorage.setItem('mty_id', v); }catch(e){} }, sil(){ try{ localStorage.removeItem('mty_id'); }catch(e){} } };
+
+let id = depo.al(), es = null, D = null, anahtar = '', raf = 0;
+const form = { pin: new URLSearchParams(location.search).get('pin') || '', ad: '', av: '', hata: '' };
+
+let ipucuSayaci = 0;
+const IPUCLARI = [
+  'Doğru cevap en az 500 puan kazandırır.',
+  'Ne kadar hızlı cevaplarsan o kadar çok puan alırsın.',
+  'Art arda doğru cevaplar seri bonusu getirir.',
+  'Cevabını seçtikten sonra değiştiremezsin, dikkatli dokun.',
+  'Soru akıllı tahtada da görünür; şıklar tabletinde.',
+  'Her sorudan sonra kısa bir "Biliyor muydun?" bilgisi çıkar.'
+];
+function ciz(html){ cancelAnimationFrame(raf); clearInterval(ipucuSayaci); app.innerHTML = html; }
+
+/* ---------- GİRİŞ ---------- */
+function giris(){
+  anahtar = '';
+  ciz(`<form class="panel center grow" id="f">
+    <div class="eyebrow">T3 · TEKNOFEST · Milli Teknoloji Hamlesi</div>
+    <h1>Milli Teknoloji <em>Bilgi Yarışı</em></h1>
+    <div class="field"><label for="pin">Oyun PIN'i</label>
+      <input class="pinin" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" placeholder="000000" value="${esc(form.pin)}"></div>
+    <div class="field"><label for="ad">Adın</label>
+      <input id="ad" maxlength="16" autocomplete="off" autocapitalize="words" placeholder="Adını yaz" value="${esc(form.ad)}"></div>
+    <div class="field"><div class="legend">Profil resmi <span class="muted">(isteğe bağlı)</span></div>
+      <div class="avsec">${AVATAR.liste.map(a => `<button type="button" class="avbtn" data-av="${a.id}" aria-pressed="${form.av===a.id}" aria-label="${a.ad}">${AVATAR.html(a.id, 56)}</button>`).join('')}</div></div>
+    <div class="err" role="alert">${esc(form.hata)}</div>
+    <button class="go" type="submit">Katıl</button></form>`);
+  // Resme dokununca seç, aynı resme tekrar dokununca seçimi kaldır. Formu yeniden çizmiyoruz ki yazılan isim silinmesin.
+  app.querySelectorAll('.avbtn').forEach(b => b.onclick = () => {
+    form.av = form.av === b.dataset.av ? '' : b.dataset.av;
+    app.querySelectorAll('.avbtn').forEach(x => x.setAttribute('aria-pressed', x.dataset.av === form.av));
+  });
+  document.getElementById('f').onsubmit = async e => {
+    e.preventDefault();
+    form.pin = document.getElementById('pin').value.trim(); form.ad = document.getElementById('ad').value.trim();
+    try{
+      const r = await (await fetch('/api/katil', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({pin:form.pin, ad:form.ad, av:form.av})})).json();
+      if(r.hata){ form.hata = r.hata; return giris(); }
+      id = r.id; depo.yaz(id); form.hata = ''; baglan();
+    }catch(err){ form.hata = 'Sunucuya ulaşılamadı. Wi-Fi bağlantını kontrol et.'; giris(); }
+  };
+}
+
+/* ---------- BAĞLANTI ---------- */
+function baglan(){
+  if(es) es.close();
+  es = new EventSource('/akis?id=' + encodeURIComponent(id));
+  es.onopen = () => kopuk.hidden = true;
+  es.onerror = () => kopuk.hidden = false;
+  es.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if(d.faz === 'yok'){ es.close(); es = null; id = null; depo.sil(); D = null; kopuk.hidden = true; return giris(); }
+    d.alindi = performance.now(); D = d; durumCiz();
+  };
+}
+
+/* ---------- OYUN EKRANLARI ---------- */
+function durumCiz(){
+  const k = JSON.stringify({...D, kalanMs:0, alindi:0});
+  if(k === anahtar) return;            // aynı durum: yeniden çizme (dokunma anında buton kaybolmasın)
+  anahtar = k;
+  const s = D.soru, ust = `<div class="hud"><span class="kim">${AVATAR.html(D.av, 30)}${esc(D.ad)}</span>${s ? `<span class="cat">${esc(s.k)}</span>` : ''}<span class="num">${fmt(D.puan)} puan</span></div>`;
+
+  if(D.faz === 'lobi'){
+    ciz(`<div class="panel center grow pop"><div class="eyebrow">Katıldın</div>
+      <div class="radar" aria-hidden="true"><span class="tarama"></span><span class="dalga"></span><span class="dalga d2"></span>
+        <i class="isaret i1"></i><i class="isaret i2"></i><i class="isaret i3"></i>
+        <div class="orta">${AVATAR.html(D.av, 92) || '<svg width="64" height="64" viewBox="0 0 34 34"><path d="M31 17 20 13 13 4h-3l3 9H7l-3-3H2l2 7-2 7h2l3-3h6l-3 9h3l7-9 11-4z" fill="#FFFFFF"/></svg>'}</div></div>
+      <div class="big">${esc(D.ad)}</div>
+      <p class="muted">Adın büyük ekranda görünüyor.</p>
+      <div class="bekle"><div><b>Yöneticinin oyunu başlatması bekleniyor<span class="noktalar"><i></i><i></i><i></i></span></b>
+        <span>Yönetici oyunu başlatınca yarışma bu ekranda kendiliğinden açılacak. Sayfayı kapatma, hazır bekle.</span></div></div>
+      <p class="ipucu" id="ipucu"></p>
+      <button class="ghost" data-act="cik">Adımı değiştir</button></div>`);
+    // Beklerken sırayla dönen kısa oyun ipuçları
+    const el = document.getElementById('ipucu'); let n = Math.floor(Math.random() * IPUCLARI.length);
+    const goster = () => { el.classList.remove('gir'); void el.offsetWidth; el.textContent = 'İpucu: ' + IPUCLARI[n++ % IPUCLARI.length]; el.classList.add('gir'); };
+    goster(); ipucuSayaci = setInterval(goster, 4500);
+    return;
+  }
+
+  if(D.faz === 'tanit') return ciz(`${ust}<div class="panel center grow pop"><div class="eyebrow">${esc(s.k)}</div>
+    <div class="big">Soru ${s.no}<span class="muted"> / ${s.toplam}</span></div><p class="muted">Hazır ol!</p></div>`);
+
+  if(D.faz === 'soru' && D.secim === null){
+    ciz(`${ust}<h2 class="q small">${esc(s.q)}</h2>
+      <div class="timer"><div class="runway">${UCAK}</div><div class="secs num" id="secs"></div></div>
+      <div class="tiles">${s.siklar.map((t,i) => `<button class="tile t${i+1}" data-act="sec" data-i="${i}"><span class="key">${HARF[i]}</span><span class="txt">${esc(t)}</span></button>`).join('')}</div>`);
+    return saat();
+  }
+  if(D.faz === 'soru') return ciz(`${ust}<div class="panel center grow pop"><div class="eyebrow">Cevabın kilitlendi</div>
+    <div class="big">${HARF[D.secim] || ''}</div><p class="muted">Diğer oyuncular bekleniyor…</p></div>`);
+
+  if(D.faz === 'sonuc'){ const r = D.sonuc;
+    return ciz(`${ust}<div class="panel center grow pop">
+      <div class="verdict ${r.ok?'ok':'no'}">${r.ok ? 'Doğru!' : (r.bos ? 'Süre doldu' : 'Yanlış')}</div>
+      <p style="font-weight:800;font-size:1.3rem">${r.ok ? `+${fmt(r.kazanc)} puan${r.seri>1 ? ` · ${r.seri} seri` : ''}` : `Doğru cevap: ${esc(r.dogruMetin)}`}</p>
+      <p class="muted">Sıran: <b class="num">${D.sira}</b> / ${D.toplam}</p>
+      <div class="fact"><b>Biliyor muydun?</b>${esc(r.bilgi)}</div></div>`); }
+
+  if(D.faz === 'final') return ciz(`<div class="panel center grow pop"><div class="eyebrow">Yarış bitti</div>${AVATAR.html(D.av, 96)}
+    <div class="big">${D.sira}. oldun</div>
+    <p style="font-weight:800;font-size:1.3rem">${esc(D.ad)} · <span class="num">${fmt(D.puan)}</span> puan</p>
+    <p class="muted">${D.soru ? D.soru.toplam : ''} sorudan ${D.dogruSayisi} doğru</p></div>`);
+}
+
+function saat(){
+  const plane = document.getElementById('plane'), secs = document.getElementById('secs');
+  const T = D.kalanMs, bitis = D.alindi + T, toplam = Math.max(T, 1);
+  const tik = () => {
+    const kalan = Math.max(0, bitis - performance.now()), oran = 1 - kalan/toplam;
+    plane.style.left = `calc(${oran*100}% - ${oran*30}px)`; secs.textContent = Math.ceil(kalan/1000);
+    if(kalan > 0) raf = requestAnimationFrame(tik);
+  };
+  tik();
+}
+
+/* Tek noktadan dokunma yönetimi: pointerdown anında tepki verir (iPad'de gecikmesiz). */
+let sonDokunma = 0;
+function islem(e){
+  const b = e.target.closest('[data-act]'); if(!b || b.disabled) return;
+  if(e.type === 'click' && performance.now() - sonDokunma < 500) return;
+  if(e.type === 'pointerdown') sonDokunma = performance.now();
+  if(b.dataset.act === 'sec'){
+    const i = +b.dataset.i; D.secim = i; durumCiz();
+    fetch('/api/cevap', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, secim:i})}).catch(() => {});
+  }
+  if(b.dataset.act === 'cik'){ if(es) es.close(); es = null; id = null; depo.sil(); D = null; giris(); }
+}
+app.addEventListener('pointerdown', islem); app.addEventListener('click', islem);
+
+id ? baglan() : giris();
+</script>
+</body>
+</html>
