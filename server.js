@@ -10,6 +10,9 @@ const MAKS = 25;                                   // en fazla oyuncu
 // Barındırılan kurulumda "kendi bilgisayarımdan geliyor" güveni kapalıdır; sunucu ekranı yalnızca /host?key=ANAHTAR ile açılır.
 const BARINDIRMA = !!(process.env.RENDER || process.env.HOST_KEY || process.env.IZINLI_HOST || process.env.RENDER_EXTERNAL_HOSTNAME);
 const ANAHTAR = process.env.HOST_KEY || crypto.randomBytes(6).toString('hex');
+// X-Forwarded-For başlığına yalnızca önümüzde gerçekten güvenilir bir vekil sunucu varsa güvenilir
+// (Render bunu kendisi belirtir; başka barındırmada TRUST_PROXY=1 verilir). Aksi hâlde başlığı istemci uydurabilir.
+const VEKIL = !!(process.env.RENDER || process.env.TRUST_PROXY);
 const EK_ADRESLER = [process.env.RENDER_EXTERNAL_HOSTNAME, ...(process.env.IZINLI_HOST || '').split(',')].map(x => (x || '').trim().toLowerCase()).filter(Boolean);
 const ADETLER = [10, 15, 20], SURELER = [15, 20, 30];
 
@@ -137,21 +140,29 @@ function adresGecerli(req) {
   if (o) { try { if (!izinli.has(new URL(o).host.toLowerCase())) return false; } catch { return false; } }
   return true;
 }
-// İstemci IP'si: barındırmada X-Forwarded-For'un EN SAĞDAKİ değeri alınır (onu güvenilir vekil sunucu ekler;
-// soldaki değerleri istemci uydurabilir). Yerelde doğrudan bağlantı adresi kullanılır.
+// İstemci IP'si: güvenilir vekil varsa X-Forwarded-For'un EN SAĞDAKİ değeri alınır (onu vekil sunucu ekler;
+// soldaki değerleri istemci uydurabilir). Vekil yoksa doğrudan bağlantı adresi kullanılır.
 function istemciIp(req) {
   const x = String(req.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
-  return (BARINDIRMA && x.length ? x[x.length - 1] : req.socket.remoteAddress) || '?';
+  return (VEKIL && x.length ? x[x.length - 1] : req.socket.remoteAddress) || '?';
 }
 // Hatalı deneme sayaçları ("tür|ip" başına, 5 dakikalık pencere). Bellek sınırlıdır ve süresi dolanlar silinir.
 const PENCERE = 5 * 60000, sayaclar = new Map();
-const kilitli = (tur, ip, enCok) => { const d = sayaclar.get(tur + '|' + ip); return !!(d && Date.now() - d.t < PENCERE && d.n >= enCok); };
+const SAYAC_SINIRI = 5000;
+// Tablo doluysa yeni adresler de kilitli sayılır: saldırgan tabloyu doldurarak kilitleri sıfırlayamaz.
+const kilitli = (tur, ip, enCok) => { const d = sayaclar.get(tur + '|' + ip); return d ? (Date.now() - d.t < PENCERE && d.n >= enCok) : sayaclar.size >= SAYAC_SINIRI; };
+function sayacTemizle() {
+  const simdi = Date.now();
+  for (const [k, d] of sayaclar) if (simdi - d.t >= PENCERE) sayaclar.delete(k);
+  // Hâlâ doluysa yalnızca az denemeli (kilide yakın olmayan) eski kayıtlar atılır; etkin kilitlere dokunulmaz.
+  if (sayaclar.size >= SAYAC_SINIRI) for (const [k, d] of sayaclar) { if (d.n < 4) sayaclar.delete(k); if (sayaclar.size < SAYAC_SINIRI * 0.8) break; }
+}
 function hataSay(tur, ip) {
   const k = tur + '|' + ip, simdi = Date.now(), d = sayaclar.get(k);
-  if (sayaclar.size > 5000) sayaclar.clear();
+  if (!d && sayaclar.size >= SAYAC_SINIRI) { sayacTemizle(); if (sayaclar.size >= SAYAC_SINIRI) return; }
   sayaclar.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
 }
-setInterval(() => { const simdi = Date.now(); for (const [k, d] of sayaclar) if (simdi - d.t >= PENCERE) sayaclar.delete(k); }, 60000).unref();
+setInterval(sayacTemizle, 60000).unref();
 
 // Yönetici anahtarı: 8 yanlış denemeden sonra o adres 5 dakika bekletilir.
 function anahtarDogru(req, anahtar) {
