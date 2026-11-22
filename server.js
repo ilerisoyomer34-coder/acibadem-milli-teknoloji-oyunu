@@ -1,6 +1,6 @@
 // Milli Teknoloji Bilgi Yarışı — oyun sunucusu (bağımlılık yok, yalnızca Node çekirdeği)
 // Çalıştır:  node server.js      Sunucu ekranı: http://localhost:3000/host
-const http = require('http'), fs = require('fs'), path = require('path'), os = require('os'), crypto = require('crypto');
+const net = require('net'), http = require('http'), fs = require('fs'), path = require('path'), os = require('os'), crypto = require('crypto');
 const SORULAR = require('./sorular');
 const AVATAR = require('./public/avatar');
 
@@ -10,6 +10,7 @@ const MAKS = 25;                                   // en fazla oyuncu
 // Barındırılan kurulumda "kendi bilgisayarımdan geliyor" güveni kapalıdır; sunucu ekranı yalnızca /host?key=ANAHTAR ile açılır.
 const BARINDIRMA = !!(process.env.RENDER || process.env.HOST_KEY || process.env.IZINLI_HOST || process.env.RENDER_EXTERNAL_HOSTNAME);
 const ANAHTAR = process.env.HOST_KEY || crypto.randomBytes(6).toString('hex');
+if (ANAHTAR.length < 12) { console.error('HOST_KEY en az 12 karakter olmalı (tahmin edilemesin diye). Sunucu başlatılmadı.'); process.exit(1); }
 // X-Forwarded-For başlığına yalnızca önümüzde gerçekten güvenilir bir vekil sunucu varsa güvenilir
 // (Render bunu kendisi belirtir; başka barındırmada TRUST_PROXY=1 verilir). Aksi hâlde başlığı istemci uydurabilir.
 const VEKIL = !!(process.env.RENDER || process.env.TRUST_PROXY);
@@ -146,23 +147,42 @@ function istemciIp(req) {
   const x = String(req.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
   return (VEKIL && x.length ? x[x.length - 1] : req.socket.remoteAddress) || '?';
 }
-// Hatalı deneme sayaçları: her tür (anahtar, pin) için ayrı ve sınırlı bir tablo, 5 dakikalık pencere.
-// IPv6 adresleri /64 ağına göre gruplanır; yoksa tek bir cihaz milyonlarca farklı adresle sayaçtan kaçabilir.
-// Tablo dolunca önce süresi dolanlar, sonra en eski ve kilide uzak kayıtlar atılır. Bilinmeyen adresler asla
-// topluca kilitlenmez; tabloyu doldurmak için binlerce gerçek adres gerekir (adres artık uydurulamıyor).
-const PENCERE = 5 * 60000, SAYAC_SINIRI = 5000, sayaclar = { anahtar: new Map(), pin: new Map() };
-const ipGrubu = ip => { const v = String(ip).replace(/^::ffff:/, ''); return v.includes(':') ? v.split(':').slice(0, 4).join(':') : v; };
-const kilitli = (tur, ip, enCok) => { const d = sayaclar[tur].get(ipGrubu(ip)); return !!(d && Date.now() - d.t < PENCERE && d.n >= enCok); };
-function sayacTemizle(tur, zorla) {
+// Hatalı deneme sayaçları: her tür için ayrı ve sınırlı bir tablo, 5 dakikalık pencere.
+// - Etkin kilitler asla silinmez (tabloyu doldurarak kilit sıfırlanamaz).
+// - Bilinmeyen adresler topluca kilitlenmez (tabloyu doldurarak oyun herkese kapatılamaz).
+// - Tablo tamamen etkin kilitlerle doluysa yeni adres sayılmaz; yönetici anahtarı en az 12 karakter olduğu için
+//   bu durumda bile deneme yanılma ile bulunamaz.
+const PENCERE = 5 * 60000, SAYAC_SINIRI = 5000, ESIK = { anahtar: 8, pin: 60 }, sayaclar = { anahtar: new Map(), pin: new Map() };
+
+// Adresi sayaç anahtarına çevirir. IPv4 olduğu gibi kalır; IPv6 tam açılıp /56 ağına indirgenir
+// (bir ev ya da okul bağlantısına genelde /56 ya da /64 verilir; tek cihaz adres değiştirerek sayaçtan kaçamaz).
+function ipGrubu(ip) {
+  let v = String(ip).trim().toLowerCase().replace(/%.*$/, '');
+  if (net.isIPv4(v)) return v;
+  if (!net.isIPv6(v)) return 'gecersiz';
+  if (v.includes('.')) {                                   // sonu IPv4 biçiminde yazılmış IPv6 (ör. ::ffff:1.2.3.4)
+    const i = v.lastIndexOf(':'), o = v.slice(i + 1).split('.').map(Number);
+    v = v.slice(0, i + 1) + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
+  }
+  let g;
+  if (v.includes('::')) {
+    const [bas, son] = v.split('::'), b = bas ? bas.split(':') : [], t = son ? son.split(':') : [];
+    g = [...b, ...Array(8 - b.length - t.length).fill('0'), ...t];
+  } else g = v.split(':');
+  const n = g.map(x => parseInt(x, 16));
+  if (n.slice(0, 5).every(x => x === 0) && n[5] === 0xffff) return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;   // IPv4 eşlemeli
+  return `${n[0].toString(16)}:${n[1].toString(16)}:${n[2].toString(16)}:${(n[3] >> 8).toString(16)}/56`;
+}
+const kilitli = (tur, ip) => { const d = sayaclar[tur].get(ipGrubu(ip)); return !!(d && Date.now() - d.t < PENCERE && d.n >= ESIK[tur]); };
+function sayacTemizle(tur, yerAc) {
   const tablo = sayaclar[tur], simdi = Date.now();
   for (const [k, d] of tablo) if (simdi - d.t >= PENCERE) tablo.delete(k);
-  if (!zorla || tablo.size < SAYAC_SINIRI) return;
-  for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (d.n < 4) tablo.delete(k); }   // önce kilide uzak olanlar
-  for (const k of tablo.keys()) { if (tablo.size < SAYAC_SINIRI * 0.8) return; tablo.delete(k); }               // gerekirse en eskiler
+  if (!yerAc) return;
+  for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (d.n < ESIK[tur]) tablo.delete(k); }   // en eskiden başlayarak, yalnızca kilitli olmayanlar
 }
 function hataSay(tur, ip) {
   const tablo = sayaclar[tur], k = ipGrubu(ip), simdi = Date.now(), d = tablo.get(k);
-  if (!d && tablo.size >= SAYAC_SINIRI) sayacTemizle(tur, true);
+  if (!d && tablo.size >= SAYAC_SINIRI) { sayacTemizle(tur, true); if (tablo.size >= SAYAC_SINIRI) return; }
   tablo.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
 }
 setInterval(() => { sayacTemizle('anahtar'); sayacTemizle('pin'); }, 60000).unref();
@@ -170,7 +190,7 @@ setInterval(() => { sayacTemizle('anahtar'); sayacTemizle('pin'); }, 60000).unre
 // Yönetici anahtarı: 8 yanlış denemeden sonra o adres 5 dakika bekletilir.
 function anahtarDogru(req, anahtar) {
   const ip = istemciIp(req);
-  if (kilitli('anahtar', ip, 8)) return false;
+  if (kilitli('anahtar', ip)) return false;
   const a = Buffer.from(String(anahtar || '')), b = Buffer.from(ANAHTAR);
   if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
   if (anahtar) hataSay('anahtar', ip);
@@ -207,7 +227,7 @@ http.createServer(async (req, res) => {
     const b = await govde(req);
     if (yol === '/api/katil') {
       const ip = istemciIp(req);
-      if (kilitli('pin', ip, 60)) return json(res, 429, { hata: 'Çok fazla hatalı PIN denemesi. Birkaç dakika sonra tekrar dene.' });
+      if (kilitli('pin', ip)) return json(res, 429, { hata: 'Çok fazla hatalı PIN denemesi. Birkaç dakika sonra tekrar dene.' });
       const r = katil(b.pin, b.ad, b.av);
       if (r.pinHatali) { hataSay('pin', ip); delete r.pinHatali; }
       return json(res, 200, r);
