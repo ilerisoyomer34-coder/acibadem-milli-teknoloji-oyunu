@@ -146,23 +146,26 @@ function istemciIp(req) {
   const x = String(req.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
   return (VEKIL && x.length ? x[x.length - 1] : req.socket.remoteAddress) || '?';
 }
-// Hatalı deneme sayaçları ("tür|ip" başına, 5 dakikalık pencere). Bellek sınırlıdır ve süresi dolanlar silinir.
-const PENCERE = 5 * 60000, sayaclar = new Map();
-const SAYAC_SINIRI = 5000;
-// Tablo doluysa yeni adresler de kilitli sayılır: saldırgan tabloyu doldurarak kilitleri sıfırlayamaz.
-const kilitli = (tur, ip, enCok) => { const d = sayaclar.get(tur + '|' + ip); return d ? (Date.now() - d.t < PENCERE && d.n >= enCok) : sayaclar.size >= SAYAC_SINIRI; };
-function sayacTemizle() {
-  const simdi = Date.now();
-  for (const [k, d] of sayaclar) if (simdi - d.t >= PENCERE) sayaclar.delete(k);
-  // Hâlâ doluysa yalnızca az denemeli (kilide yakın olmayan) eski kayıtlar atılır; etkin kilitlere dokunulmaz.
-  if (sayaclar.size >= SAYAC_SINIRI) for (const [k, d] of sayaclar) { if (d.n < 4) sayaclar.delete(k); if (sayaclar.size < SAYAC_SINIRI * 0.8) break; }
+// Hatalı deneme sayaçları: her tür (anahtar, pin) için ayrı ve sınırlı bir tablo, 5 dakikalık pencere.
+// IPv6 adresleri /64 ağına göre gruplanır; yoksa tek bir cihaz milyonlarca farklı adresle sayaçtan kaçabilir.
+// Tablo dolunca önce süresi dolanlar, sonra en eski ve kilide uzak kayıtlar atılır. Bilinmeyen adresler asla
+// topluca kilitlenmez; tabloyu doldurmak için binlerce gerçek adres gerekir (adres artık uydurulamıyor).
+const PENCERE = 5 * 60000, SAYAC_SINIRI = 5000, sayaclar = { anahtar: new Map(), pin: new Map() };
+const ipGrubu = ip => { const v = String(ip).replace(/^::ffff:/, ''); return v.includes(':') ? v.split(':').slice(0, 4).join(':') : v; };
+const kilitli = (tur, ip, enCok) => { const d = sayaclar[tur].get(ipGrubu(ip)); return !!(d && Date.now() - d.t < PENCERE && d.n >= enCok); };
+function sayacTemizle(tur, zorla) {
+  const tablo = sayaclar[tur], simdi = Date.now();
+  for (const [k, d] of tablo) if (simdi - d.t >= PENCERE) tablo.delete(k);
+  if (!zorla || tablo.size < SAYAC_SINIRI) return;
+  for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (d.n < 4) tablo.delete(k); }   // önce kilide uzak olanlar
+  for (const k of tablo.keys()) { if (tablo.size < SAYAC_SINIRI * 0.8) return; tablo.delete(k); }               // gerekirse en eskiler
 }
 function hataSay(tur, ip) {
-  const k = tur + '|' + ip, simdi = Date.now(), d = sayaclar.get(k);
-  if (!d && sayaclar.size >= SAYAC_SINIRI) { sayacTemizle(); if (sayaclar.size >= SAYAC_SINIRI) return; }
-  sayaclar.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
+  const tablo = sayaclar[tur], k = ipGrubu(ip), simdi = Date.now(), d = tablo.get(k);
+  if (!d && tablo.size >= SAYAC_SINIRI) sayacTemizle(tur, true);
+  tablo.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
 }
-setInterval(sayacTemizle, 60000).unref();
+setInterval(() => { sayacTemizle('anahtar'); sayacTemizle('pin'); }, 60000).unref();
 
 // Yönetici anahtarı: 8 yanlış denemeden sonra o adres 5 dakika bekletilir.
 function anahtarDogru(req, anahtar) {
