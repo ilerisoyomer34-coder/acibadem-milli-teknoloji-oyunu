@@ -157,9 +157,10 @@ const PENCERE = 5 * 60000, SAYAC_SINIRI = 5000, ESIK = { anahtar: 8, pin: 60 }, 
 // Adresi sayaç anahtarına çevirir. IPv4 olduğu gibi kalır; IPv6 tam açılıp /56 ağına indirgenir
 // (bir ev ya da okul bağlantısına genelde /56 ya da /64 verilir; tek cihaz adres değiştirerek sayaçtan kaçamaz).
 function ipGrubu(ip) {
-  let v = String(ip).trim().toLowerCase().replace(/%.*$/, '');
+  let v = String(ip).trim().toLowerCase();
+  v = v.replace(/^\[([^\]]+)\](:\d+)?$/, '$1').replace(/^(\d+\.\d+\.\d+\.\d+):\d+$/, '$1').replace(/%.*$/, '');   // köşeli parantez, port ve bölge kimliğini at
   if (net.isIPv4(v)) return v;
-  if (!net.isIPv6(v)) return 'gecersiz';
+  if (!net.isIPv6(v)) return 'x:' + v.slice(0, 64);       // tanınmayan değerler ortak bir kovaya değil, kendi değerine göre sayılır
   if (v.includes('.')) {                                   // sonu IPv4 biçiminde yazılmış IPv6 (ör. ::ffff:1.2.3.4)
     const i = v.lastIndexOf(':'), o = v.slice(i + 1).split('.').map(Number);
     v = v.slice(0, i + 1) + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
@@ -173,7 +174,14 @@ function ipGrubu(ip) {
   if (n.slice(0, 5).every(x => x === 0) && n[5] === 0xffff) return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;   // IPv4 eşlemeli
   return `${n[0].toString(16)}:${n[1].toString(16)}:${n[2].toString(16)}:${(n[3] >> 8).toString(16)}/56`;
 }
-const kilitli = (tur, ip) => { const d = sayaclar[tur].get(ipGrubu(ip)); return !!(d && Date.now() - d.t < PENCERE && d.n >= ESIK[tur]); };
+// Tablo tamamen etkin kilitlerle doluysa, tabloda yeri olmayan adresler ortak bir "taşma" sayacını paylaşır.
+// Böylece dolu tablo korumayı kapatmaz; zaten izlenen adresler ise kendi sayaçlarıyla devam eder.
+const TASMA = '*tasma';
+const etkin = (d, tur) => !!(d && Date.now() - d.t < PENCERE && d.n >= ESIK[tur]);
+function kilitli(tur, ip) {
+  const tablo = sayaclar[tur], d = tablo.get(ipGrubu(ip));
+  return d ? etkin(d, tur) : (tablo.size >= SAYAC_SINIRI && etkin(tablo.get(TASMA), tur));
+}
 function sayacTemizle(tur, yerAc) {
   const tablo = sayaclar[tur], simdi = Date.now();
   for (const [k, d] of tablo) if (simdi - d.t >= PENCERE) tablo.delete(k);
@@ -181,8 +189,10 @@ function sayacTemizle(tur, yerAc) {
   for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (d.n < ESIK[tur]) tablo.delete(k); }   // en eskiden başlayarak, yalnızca kilitli olmayanlar
 }
 function hataSay(tur, ip) {
-  const tablo = sayaclar[tur], k = ipGrubu(ip), simdi = Date.now(), d = tablo.get(k);
-  if (!d && tablo.size >= SAYAC_SINIRI) { sayacTemizle(tur, true); if (tablo.size >= SAYAC_SINIRI) return; }
+  const tablo = sayaclar[tur], simdi = Date.now();
+  let k = ipGrubu(ip);
+  if (!tablo.has(k) && tablo.size >= SAYAC_SINIRI) { sayacTemizle(tur, true); if (tablo.size >= SAYAC_SINIRI) k = TASMA; }
+  const d = tablo.get(k);
   tablo.set(k, d && simdi - d.t < PENCERE ? { n: d.n + 1, t: d.t } : { n: 1, t: simdi });
 }
 setInterval(() => { sayacTemizle('anahtar'); sayacTemizle('pin'); }, 60000).unref();
