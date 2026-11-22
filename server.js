@@ -186,7 +186,7 @@ function sayacTemizle(tur, yerAc) {
   const tablo = sayaclar[tur], simdi = Date.now();
   for (const [k, d] of tablo) if (simdi - d.t >= PENCERE) tablo.delete(k);
   if (!yerAc) return;
-  for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (d.n < ESIK[tur]) tablo.delete(k); }   // en eskiden başlayarak, yalnızca kilitli olmayanlar
+  for (const [k, d] of tablo) { if (tablo.size < SAYAC_SINIRI * 0.8) return; if (k !== TASMA && d.n < ESIK[tur]) tablo.delete(k); }   // en eskiden başlayarak, yalnızca kilitli olmayanlar (taşma sayacı hariç)
 }
 function hataSay(tur, ip) {
   const tablo = sayaclar[tur], simdi = Date.now();
